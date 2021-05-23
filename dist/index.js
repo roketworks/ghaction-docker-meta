@@ -39,16 +39,17 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.asyncForEach = exports.getInputList = exports.getInputs = exports.tmpDir = void 0;
+exports.setOutput = exports.asyncForEach = exports.getInputList = exports.getInputs = exports.tmpDir = void 0;
 const sync_1 = __importDefault(__webpack_require__(8750));
 const core = __importStar(__webpack_require__(2186));
+const command_1 = __webpack_require__(7351);
 const fs = __importStar(__webpack_require__(5747));
 const os = __importStar(__webpack_require__(2087));
 const path = __importStar(__webpack_require__(5622));
 let _tmpDir;
 function tmpDir() {
     if (!_tmpDir) {
-        _tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ghaction-docker-meta-')).split(path.sep).join(path.posix.sep);
+        _tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'docker-metadata-action-')).split(path.sep).join(path.posix.sep);
     }
     return _tmpDir;
 }
@@ -56,19 +57,12 @@ exports.tmpDir = tmpDir;
 function getInputs() {
     return {
         images: getInputList('images'),
-        tagSha: /true/i.test(core.getInput('tag-sha') || 'false'),
-        tagEdge: /true/i.test(core.getInput('tag-edge') || 'false'),
-        tagEdgeBranch: core.getInput('tag-edge-branch'),
-        tagSemver: getInputList('tag-semver'),
-        tagMatch: core.getInput('tag-match'),
-        tagMatchGroup: Number(core.getInput('tag-match-group')) || 0,
-        tagLatest: /true/i.test(core.getInput('tag-latest') || core.getInput('tag-match-latest') || 'true'),
-        tagSchedule: core.getInput('tag-schedule') || 'nightly',
-        tagCustom: getInputList('tag-custom'),
-        tagCustomOnly: /true/i.test(core.getInput('tag-custom-only') || 'false'),
-        labelCustom: getInputList('label-custom', true),
+        tags: getInputList('tags', true),
+        flavor: getInputList('flavor', true),
+        labels: getInputList('labels', true),
         sepTags: core.getInput('sep-tags') || `\n`,
         sepLabels: core.getInput('sep-labels') || `\n`,
+        bakeTarget: core.getInput('bake-target') || `docker-metadata-action`,
         githubToken: core.getInput('github-token')
     };
 }
@@ -102,7 +96,83 @@ exports.asyncForEach = (array, callback) => __awaiter(void 0, void 0, void 0, fu
         yield callback(array[index], index, array);
     }
 });
+// FIXME: Temp fix https://github.com/actions/toolkit/issues/777
+function setOutput(name, value) {
+    command_1.issueCommand('set-output', { name }, value);
+}
+exports.setOutput = setOutput;
 //# sourceMappingURL=context.js.map
+
+/***/ }),
+
+/***/ 3716:
+/***/ (function(__unused_webpack_module, exports, __webpack_require__) {
+
+"use strict";
+
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    Object.defineProperty(o, k2, { enumerable: true, get: function() { return m[k]; } });
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || function (mod) {
+    if (mod && mod.__esModule) return mod;
+    var result = {};
+    if (mod != null) for (var k in mod) if (k !== "default" && Object.prototype.hasOwnProperty.call(mod, k)) __createBinding(result, mod, k);
+    __setModuleDefault(result, mod);
+    return result;
+};
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.Transform = void 0;
+const core = __importStar(__webpack_require__(2186));
+function Transform(inputs) {
+    const flavor = {
+        latest: 'auto',
+        prefix: '',
+        suffix: ''
+    };
+    for (const input of inputs) {
+        const parts = input.split('=', 2);
+        if (parts.length == 1) {
+            throw new Error(`Invalid entry: ${input}`);
+        }
+        switch (parts[0]) {
+            case 'latest': {
+                flavor.latest = parts[1];
+                if (!['auto', 'true', 'false'].includes(flavor.latest)) {
+                    throw new Error(`Invalid latest flavor entry: ${input}`);
+                }
+                break;
+            }
+            case 'prefix': {
+                flavor.prefix = parts[1];
+                break;
+            }
+            case 'suffix': {
+                flavor.suffix = parts[1];
+                break;
+            }
+            default: {
+                throw new Error(`Unknown entry: ${input}`);
+            }
+        }
+    }
+    core.startGroup(`Processing flavor input`);
+    core.info(`latest=${flavor.latest}`);
+    core.info(`prefix=${flavor.prefix}`);
+    core.info(`suffix=${flavor.suffix}`);
+    core.endGroup();
+    return flavor;
+}
+exports.Transform = Transform;
+//# sourceMappingURL=flavor.js.map
 
 /***/ }),
 
@@ -221,32 +291,48 @@ function run() {
             core.endGroup();
             const meta = new meta_1.Meta(inputs, context, repo);
             const version = meta.version;
-            core.startGroup(`Docker image version`);
-            core.info(version.main || '');
-            core.endGroup();
-            core.setOutput('version', version.main || '');
-            // Docker tags
-            const tags = meta.tags();
-            core.startGroup(`Docker tags`);
-            for (let tag of tags) {
-                core.info(tag);
+            if (meta.version.main == undefined || meta.version.main.length == 0) {
+                core.warning(`No Docker image version has been generated. Check tags input.`);
             }
-            core.endGroup();
-            core.setOutput('tags', tags.join(inputs.sepTags));
+            else {
+                core.startGroup(`Docker image version`);
+                core.info(version.main || '');
+                core.endGroup();
+            }
+            context_1.setOutput('version', version.main || '');
+            // Docker tags
+            const tags = meta.getTags();
+            if (tags.length == 0) {
+                core.warning('No Docker tag has been generated. Check tags input.');
+            }
+            else {
+                core.startGroup(`Docker tags`);
+                for (let tag of tags) {
+                    core.info(tag);
+                }
+                core.endGroup();
+            }
+            context_1.setOutput('tags', tags.join(inputs.sepTags));
             // Docker labels
-            const labels = meta.labels();
+            const labels = meta.getLabels();
             core.startGroup(`Docker labels`);
             for (let label of labels) {
                 core.info(label);
             }
             core.endGroup();
-            core.setOutput('labels', labels.join(inputs.sepLabels));
+            context_1.setOutput('labels', labels.join(inputs.sepLabels));
+            // JSON
+            const jsonOutput = meta.getJSON();
+            core.startGroup(`JSON output`);
+            core.info(JSON.stringify(jsonOutput, null, 2));
+            core.endGroup();
+            context_1.setOutput('json', jsonOutput);
             // Bake definition file
-            const bakeFile = meta.bakeFile();
+            const bakeFile = meta.getBakeFile();
             core.startGroup(`Bake definition file`);
             core.info(fs.readFileSync(bakeFile, 'utf8'));
             core.endGroup();
-            core.setOutput('bake-file', bakeFile);
+            context_1.setOutput('bake-file', bakeFile);
         }
         catch (error) {
             core.setFailed(error.message);
@@ -293,99 +379,250 @@ const path = __importStar(__webpack_require__(5622));
 const moment_1 = __importDefault(__webpack_require__(9623));
 const semver = __importStar(__webpack_require__(1383));
 const context_1 = __webpack_require__(3842);
+const tcl = __importStar(__webpack_require__(2829));
+const fcl = __importStar(__webpack_require__(3716));
 const core = __importStar(__webpack_require__(2186));
 class Meta {
     constructor(inputs, context, repo) {
         this.inputs = inputs;
-        if (!this.inputs.tagEdgeBranch) {
-            this.inputs.tagEdgeBranch = repo.default_branch;
-        }
         this.context = context;
         this.repo = repo;
+        this.tags = tcl.Transform(inputs.tags);
+        this.flavor = fcl.Transform(inputs.flavor);
         this.date = new Date();
         this.version = this.getVersion();
     }
     getVersion() {
-        const currentDate = this.date;
         let version = {
             main: undefined,
             partial: [],
-            latest: false
+            latest: undefined
         };
-        if (/schedule/.test(this.context.eventName)) {
-            version.main = handlebars.compile(this.inputs.tagSchedule)({
-                date: function (format) {
-                    return moment_1.default(currentDate).utc().format(format);
-                }
-            });
-        }
-        else if (/^refs\/tags\//.test(this.context.ref)) {
-            version.main = this.context.ref.replace(/^refs\/tags\//g, '').replace(/\//g, '-');
-            if (this.inputs.tagSemver.length > 0 && !semver.valid(version.main)) {
-                core.warning(`${version.main} is not a valid semver. More info: https://semver.org/`);
+        for (const tag of this.tags) {
+            if (!/true/i.test(tag.attrs['enable'])) {
+                continue;
             }
-            if (this.inputs.tagSemver.length > 0 && semver.valid(version.main)) {
-                const sver = semver.parse(version.main, {
-                    includePrerelease: true
-                });
-                if (semver.prerelease(version.main)) {
-                    version.main = handlebars.compile('{{version}}')(sver);
+            switch (tag.type) {
+                case tcl.Type.Schedule: {
+                    version = this.procSchedule(version, tag);
+                    break;
                 }
-                else {
-                    version.latest = this.inputs.tagLatest;
-                    version.main = handlebars.compile(this.inputs.tagSemver[0])(sver);
-                    for (const semverTpl of this.inputs.tagSemver) {
-                        const partial = handlebars.compile(semverTpl)(sver);
-                        if (partial == version.main) {
-                            continue;
-                        }
-                        version.partial.push(partial);
+                case tcl.Type.Semver: {
+                    version = this.procSemver(version, tag);
+                    break;
+                }
+                case tcl.Type.Match: {
+                    version = this.procMatch(version, tag);
+                    break;
+                }
+                case tcl.Type.Ref: {
+                    if (tag.attrs['event'] == tcl.RefEvent.Branch) {
+                        version = this.procRefBranch(version, tag);
                     }
+                    else if (tag.attrs['event'] == tcl.RefEvent.Tag) {
+                        version = this.procRefTag(version, tag);
+                    }
+                    else if (tag.attrs['event'] == tcl.RefEvent.PR) {
+                        version = this.procRefPr(version, tag);
+                    }
+                    break;
                 }
-            }
-            else if (this.inputs.tagMatch) {
-                let tagMatch;
-                const isRegEx = this.inputs.tagMatch.match(/^\/(.+)\/(.*)$/);
-                if (isRegEx) {
-                    tagMatch = version.main.match(new RegExp(isRegEx[1], isRegEx[2]));
+                case tcl.Type.Edge: {
+                    version = this.procEdge(version, tag);
+                    break;
                 }
-                else {
-                    tagMatch = version.main.match(this.inputs.tagMatch);
+                case tcl.Type.Raw: {
+                    version = this.procRaw(version, tag);
+                    break;
                 }
-                if (tagMatch) {
-                    version.main = tagMatch[this.inputs.tagMatchGroup];
-                    version.latest = this.inputs.tagLatest;
+                case tcl.Type.Sha: {
+                    version = this.procSha(version, tag);
+                    break;
                 }
-            }
-            else {
-                version.latest = this.inputs.tagLatest;
-            }
-        }
-        else if (/^refs\/heads\//.test(this.context.ref)) {
-            version.main = this.context.ref.replace(/^refs\/heads\//g, '').replace(/[^a-zA-Z0-9._-]+/g, '-');
-            if (this.inputs.tagEdge && this.inputs.tagEdgeBranch === version.main) {
-                version.main = 'edge';
-            }
-        }
-        else if (/^refs\/pull\//.test(this.context.ref)) {
-            version.main = `pr-${this.context.ref.replace(/^refs\/pull\//g, '').replace(/\/merge$/g, '')}`;
-        }
-        if (this.inputs.tagCustom.length > 0) {
-            if (this.inputs.tagCustomOnly) {
-                version = {
-                    main: this.inputs.tagCustom.shift(),
-                    partial: this.inputs.tagCustom,
-                    latest: false
-                };
-            }
-            else {
-                version.partial.push(...this.inputs.tagCustom);
             }
         }
         version.partial = version.partial.filter((item, index) => version.partial.indexOf(item) === index);
+        if (version.latest == undefined) {
+            version.latest = false;
+        }
         return version;
     }
-    tags() {
+    procSchedule(version, tag) {
+        if (!/schedule/.test(this.context.eventName)) {
+            return version;
+        }
+        const currentDate = this.date;
+        const vraw = this.setValue(handlebars.compile(tag.attrs['pattern'])({
+            date: function (format) {
+                return moment_1.default(currentDate).utc().format(format);
+            }
+        }), tag);
+        return Meta.setVersion(version, vraw, this.flavor.latest == 'auto' ? false : this.flavor.latest == 'true');
+    }
+    procSemver(version, tag) {
+        if (!/^refs\/tags\//.test(this.context.ref) && tag.attrs['value'].length == 0) {
+            return version;
+        }
+        let vraw;
+        if (tag.attrs['value'].length > 0) {
+            vraw = this.setGlobalExp(tag.attrs['value']);
+        }
+        else {
+            vraw = this.context.ref.replace(/^refs\/tags\//g, '').replace(/\//g, '-');
+        }
+        if (!semver.valid(vraw)) {
+            core.warning(`${vraw} is not a valid semver. More info: https://semver.org/`);
+            return version;
+        }
+        let latest = false;
+        const sver = semver.parse(vraw, {
+            includePrerelease: true
+        });
+        if (semver.prerelease(vraw)) {
+            vraw = this.setValue(handlebars.compile('{{version}}')(sver), tag);
+        }
+        else {
+            vraw = this.setValue(handlebars.compile(tag.attrs['pattern'])(sver), tag);
+            latest = true;
+        }
+        return Meta.setVersion(version, vraw, this.flavor.latest == 'auto' ? latest : this.flavor.latest == 'true');
+    }
+    procMatch(version, tag) {
+        if (!/^refs\/tags\//.test(this.context.ref) && tag.attrs['value'].length == 0) {
+            return version;
+        }
+        let vraw;
+        if (tag.attrs['value'].length > 0) {
+            vraw = this.setGlobalExp(tag.attrs['value']);
+        }
+        else {
+            vraw = this.context.ref.replace(/^refs\/tags\//g, '').replace(/\//g, '-');
+        }
+        let latest = false;
+        let tmatch;
+        const isRegEx = tag.attrs['pattern'].match(/^\/(.+)\/(.*)$/);
+        if (isRegEx) {
+            tmatch = vraw.match(new RegExp(isRegEx[1], isRegEx[2]));
+        }
+        else {
+            tmatch = vraw.match(tag.attrs['pattern']);
+        }
+        if (!tmatch) {
+            core.warning(`${tag.attrs['pattern']} does not match ${vraw}.`);
+            return version;
+        }
+        if (typeof tmatch[tag.attrs['group']] === 'undefined') {
+            core.warning(`Group ${tag.attrs['group']} does not exist for ${tag.attrs['pattern']} pattern.`);
+            return version;
+        }
+        vraw = this.setValue(tmatch[tag.attrs['group']], tag);
+        return Meta.setVersion(version, vraw, this.flavor.latest == 'auto' ? true : this.flavor.latest == 'true');
+    }
+    procRefBranch(version, tag) {
+        if (!/^refs\/heads\//.test(this.context.ref)) {
+            return version;
+        }
+        const vraw = this.setValue(this.context.ref.replace(/^refs\/heads\//g, '').replace(/[^a-zA-Z0-9._-]+/g, '-'), tag);
+        return Meta.setVersion(version, vraw, this.flavor.latest == 'auto' ? false : this.flavor.latest == 'true');
+    }
+    procRefTag(version, tag) {
+        if (!/^refs\/tags\//.test(this.context.ref)) {
+            return version;
+        }
+        const vraw = this.setValue(this.context.ref.replace(/^refs\/tags\//g, '').replace(/\//g, '-'), tag);
+        return Meta.setVersion(version, vraw, this.flavor.latest == 'auto' ? true : this.flavor.latest == 'true');
+    }
+    procRefPr(version, tag) {
+        let ref = this.context.ref;
+        if (/pull_request_target/.test(this.context.eventName)) {
+            ref = `refs/pull/${this.context.payload.number}/merge`;
+        }
+        if (!/^refs\/pull\//.test(ref)) {
+            return version;
+        }
+        const vraw = this.setValue(ref.replace(/^refs\/pull\//g, '').replace(/\/merge$/g, ''), tag);
+        return Meta.setVersion(version, vraw, this.flavor.latest == 'auto' ? false : this.flavor.latest == 'true');
+    }
+    procEdge(version, tag) {
+        if (!/^refs\/heads\//.test(this.context.ref)) {
+            return version;
+        }
+        let val = this.context.ref.replace(/^refs\/heads\//g, '').replace(/[^a-zA-Z0-9._-]+/g, '-');
+        if (tag.attrs['branch'].length == 0) {
+            tag.attrs['branch'] = this.repo.default_branch;
+        }
+        if (tag.attrs['branch'] === val) {
+            val = 'edge';
+        }
+        const vraw = this.setValue(val, tag);
+        return Meta.setVersion(version, vraw, this.flavor.latest == 'auto' ? false : this.flavor.latest == 'true');
+    }
+    procRaw(version, tag) {
+        const vraw = this.setValue(this.setGlobalExp(tag.attrs['value']), tag);
+        return Meta.setVersion(version, vraw, this.flavor.latest == 'auto' ? false : this.flavor.latest == 'true');
+    }
+    procSha(version, tag) {
+        if (!this.context.sha) {
+            return version;
+        }
+        let val = this.context.sha;
+        if (tag.attrs['format'] === tcl.ShaFormat.Short) {
+            val = this.context.sha.substr(0, 7);
+        }
+        const vraw = this.setValue(val, tag);
+        return Meta.setVersion(version, vraw, this.flavor.latest == 'auto' ? false : this.flavor.latest == 'true');
+    }
+    static setVersion(version, val, latest) {
+        if (val.length == 0) {
+            return version;
+        }
+        if (version.main == undefined) {
+            version.main = val;
+        }
+        else if (val !== version.main) {
+            version.partial.push(val);
+        }
+        if (version.latest == undefined) {
+            version.latest = latest;
+        }
+        return version;
+    }
+    setValue(val, tag) {
+        if (tag.attrs.hasOwnProperty('prefix')) {
+            val = `${this.setGlobalExp(tag.attrs['prefix'])}${val}`;
+        }
+        else if (this.flavor.prefix.length > 0) {
+            val = `${this.setGlobalExp(this.flavor.prefix)}${val}`;
+        }
+        if (tag.attrs.hasOwnProperty('suffix')) {
+            val = `${val}${this.setGlobalExp(tag.attrs['suffix'])}`;
+        }
+        else if (this.flavor.suffix.length > 0) {
+            val = `${val}${this.setGlobalExp(this.flavor.suffix)}`;
+        }
+        return val;
+    }
+    setGlobalExp(val) {
+        const ctx = this.context;
+        return handlebars.compile(val)({
+            branch: function () {
+                if (!/^refs\/heads\//.test(ctx.ref)) {
+                    return '';
+                }
+                return ctx.ref.replace(/^refs\/heads\//g, '').replace(/[^a-zA-Z0-9._-]+/g, '-');
+            },
+            tag: function () {
+                if (!/^refs\/tags\//.test(ctx.ref)) {
+                    return '';
+                }
+                return ctx.ref.replace(/^refs\/tags\//g, '').replace(/\//g, '-');
+            },
+            sha: function () {
+                return ctx.sha.substr(0, 7);
+            }
+        });
+    }
+    getTags() {
         if (!this.version.main) {
             return [];
         }
@@ -399,13 +636,10 @@ class Meta {
             if (this.version.latest) {
                 tags.push(`${imageLc}:latest`);
             }
-            if (this.context.sha && this.inputs.tagSha) {
-                tags.push(`${imageLc}:sha-${this.context.sha.substr(0, 7)}`);
-            }
         }
         return tags;
     }
-    labels() {
+    getLabels() {
         var _a;
         let labels = [
             `org.opencontainers.image.title=${this.repo.name || ''}`,
@@ -417,24 +651,36 @@ class Meta {
             `org.opencontainers.image.revision=${this.context.sha || ''}`,
             `org.opencontainers.image.licenses=${((_a = this.repo.license) === null || _a === void 0 ? void 0 : _a.spdx_id) || ''}`
         ];
-        labels.push(...this.inputs.labelCustom);
+        labels.push(...this.inputs.labels);
         return labels;
     }
-    bakeFile() {
-        let jsonLabels = {};
-        for (let label of this.labels()) {
-            const matches = label.match(/([^=]*)=(.*)/);
-            if (!matches) {
-                continue;
-            }
-            jsonLabels[matches[1]] = matches[2];
-        }
-        const bakeFile = path.join(context_1.tmpDir(), 'ghaction-docker-meta-bake.json').split(path.sep).join(path.posix.sep);
+    getJSON() {
+        return {
+            tags: this.getTags(),
+            labels: this.getLabels().reduce((res, label) => {
+                const matches = label.match(/([^=]*)=(.*)/);
+                if (!matches) {
+                    return res;
+                }
+                res[matches[1]] = matches[2];
+                return res;
+            }, {})
+        };
+    }
+    getBakeFile() {
+        const bakeFile = path.join(context_1.tmpDir(), 'docker-metadata-action-bake.json').split(path.sep).join(path.posix.sep);
         fs.writeFileSync(bakeFile, JSON.stringify({
             target: {
-                'ghaction-docker-meta': {
-                    tags: this.tags(),
-                    labels: jsonLabels,
+                [this.inputs.bakeTarget]: {
+                    tags: this.getTags(),
+                    labels: this.getLabels().reduce((res, label) => {
+                        const matches = label.match(/([^=]*)=(.*)/);
+                        if (!matches) {
+                            return res;
+                        }
+                        res[matches[1]] = matches[2];
+                        return res;
+                    }, {}),
                     args: {
                         DOCKER_META_IMAGES: this.inputs.images.join(','),
                         DOCKER_META_VERSION: this.version.main
@@ -447,6 +693,231 @@ class Meta {
 }
 exports.Meta = Meta;
 //# sourceMappingURL=meta.js.map
+
+/***/ }),
+
+/***/ 2829:
+/***/ (function(__unused_webpack_module, exports, __webpack_require__) {
+
+"use strict";
+
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    Object.defineProperty(o, k2, { enumerable: true, get: function() { return m[k]; } });
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || function (mod) {
+    if (mod && mod.__esModule) return mod;
+    var result = {};
+    if (mod != null) for (var k in mod) if (k !== "default" && Object.prototype.hasOwnProperty.call(mod, k)) __createBinding(result, mod, k);
+    __setModuleDefault(result, mod);
+    return result;
+};
+var __importDefault = (this && this.__importDefault) || function (mod) {
+    return (mod && mod.__esModule) ? mod : { "default": mod };
+};
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.Parse = exports.Transform = exports.DefaultPriorities = exports.Tag = exports.ShaFormat = exports.RefEvent = exports.Type = void 0;
+const sync_1 = __importDefault(__webpack_require__(8750));
+const core = __importStar(__webpack_require__(2186));
+var Type;
+(function (Type) {
+    Type["Schedule"] = "schedule";
+    Type["Semver"] = "semver";
+    Type["Match"] = "match";
+    Type["Edge"] = "edge";
+    Type["Ref"] = "ref";
+    Type["Raw"] = "raw";
+    Type["Sha"] = "sha";
+})(Type = exports.Type || (exports.Type = {}));
+var RefEvent;
+(function (RefEvent) {
+    RefEvent["Branch"] = "branch";
+    RefEvent["Tag"] = "tag";
+    RefEvent["PR"] = "pr";
+})(RefEvent = exports.RefEvent || (exports.RefEvent = {}));
+var ShaFormat;
+(function (ShaFormat) {
+    ShaFormat["Short"] = "short";
+    ShaFormat["Long"] = "long";
+})(ShaFormat = exports.ShaFormat || (exports.ShaFormat = {}));
+class Tag {
+    constructor() {
+        this.attrs = {};
+    }
+    toString() {
+        const out = [`type=${this.type}`];
+        for (let attr in this.attrs) {
+            out.push(`${attr}=${this.attrs[attr]}`);
+        }
+        return out.join(',');
+    }
+}
+exports.Tag = Tag;
+exports.DefaultPriorities = {
+    [Type.Schedule]: '1000',
+    [Type.Semver]: '900',
+    [Type.Match]: '800',
+    [Type.Edge]: '700',
+    [Type.Ref]: '600',
+    [Type.Raw]: '200',
+    [Type.Sha]: '100'
+};
+function Transform(inputs) {
+    const tags = [];
+    if (inputs.length == 0) {
+        // prettier-ignore
+        inputs = [
+            `type=schedule`,
+            `type=ref,event=${RefEvent.Branch}`,
+            `type=ref,event=${RefEvent.Tag}`,
+            `type=ref,event=${RefEvent.PR}`
+        ];
+    }
+    for (const input of inputs) {
+        tags.push(Parse(input));
+    }
+    const sorted = tags.sort((tag1, tag2) => {
+        if (Number(tag1.attrs['priority']) < Number(tag2.attrs['priority'])) {
+            return 1;
+        }
+        if (Number(tag1.attrs['priority']) > Number(tag2.attrs['priority'])) {
+            return -1;
+        }
+        return 0;
+    });
+    core.startGroup(`Processing tags input`);
+    for (const tag of sorted) {
+        core.info(tag.toString());
+    }
+    core.endGroup();
+    return sorted;
+}
+exports.Transform = Transform;
+function Parse(s) {
+    const fields = sync_1.default(s, {
+        relaxColumnCount: true,
+        skipLinesWithEmptyValues: true
+    })[0];
+    const tag = new Tag();
+    for (const field of fields) {
+        const parts = field.toString().split('=', 2);
+        if (parts.length == 1) {
+            tag.attrs['value'] = parts[0].trim();
+        }
+        else {
+            const key = parts[0].trim().toLowerCase();
+            const value = parts[1].trim();
+            switch (key) {
+                case 'type': {
+                    if (!Object.values(Type).includes(value)) {
+                        throw new Error(`Unknown type attribute: ${value}`);
+                    }
+                    tag.type = value;
+                    break;
+                }
+                default: {
+                    tag.attrs[key] = value;
+                    break;
+                }
+            }
+        }
+    }
+    if (tag.type == undefined) {
+        tag.type = Type.Raw;
+    }
+    switch (tag.type) {
+        case Type.Schedule: {
+            if (!tag.attrs.hasOwnProperty('pattern')) {
+                tag.attrs['pattern'] = 'nightly';
+            }
+            break;
+        }
+        case Type.Semver: {
+            if (!tag.attrs.hasOwnProperty('pattern')) {
+                throw new Error(`Missing pattern attribute for ${s}`);
+            }
+            if (!tag.attrs.hasOwnProperty('value')) {
+                tag.attrs['value'] = '';
+            }
+            break;
+        }
+        case Type.Match: {
+            if (!tag.attrs.hasOwnProperty('pattern')) {
+                throw new Error(`Missing pattern attribute for ${s}`);
+            }
+            if (!tag.attrs.hasOwnProperty('group')) {
+                tag.attrs['group'] = '0';
+            }
+            if (isNaN(+tag.attrs['group'])) {
+                throw new Error(`Invalid match group for ${s}`);
+            }
+            if (!tag.attrs.hasOwnProperty('value')) {
+                tag.attrs['value'] = '';
+            }
+            break;
+        }
+        case Type.Edge: {
+            if (!tag.attrs.hasOwnProperty('branch')) {
+                tag.attrs['branch'] = '';
+            }
+            break;
+        }
+        case Type.Ref: {
+            if (!tag.attrs.hasOwnProperty('event')) {
+                throw new Error(`Missing event attribute for ${s}`);
+            }
+            if (!Object.keys(RefEvent)
+                .map(k => RefEvent[k])
+                .includes(tag.attrs['event'])) {
+                throw new Error(`Invalid event for ${s}`);
+            }
+            if (tag.attrs['event'] == RefEvent.PR && !tag.attrs.hasOwnProperty('prefix')) {
+                tag.attrs['prefix'] = 'pr-';
+            }
+            break;
+        }
+        case Type.Raw: {
+            if (!tag.attrs.hasOwnProperty('value')) {
+                throw new Error(`Missing value attribute for ${s}`);
+            }
+            break;
+        }
+        case Type.Sha: {
+            if (!tag.attrs.hasOwnProperty('prefix')) {
+                tag.attrs['prefix'] = 'sha-';
+            }
+            if (!tag.attrs.hasOwnProperty('format')) {
+                tag.attrs['format'] = ShaFormat.Short;
+            }
+            if (!Object.keys(ShaFormat)
+                .map(k => ShaFormat[k])
+                .includes(tag.attrs['format'])) {
+                throw new Error(`Invalid format for ${s}`);
+            }
+            break;
+        }
+    }
+    if (!tag.attrs.hasOwnProperty('enable')) {
+        tag.attrs['enable'] = 'true';
+    }
+    if (!tag.attrs.hasOwnProperty('priority')) {
+        tag.attrs['priority'] = exports.DefaultPriorities[tag.type];
+    }
+    if (!['true', 'false'].includes(tag.attrs['enable'])) {
+        throw new Error(`Invalid value for enable attribute: ${tag.attrs['enable']}`);
+    }
+    return tag;
+}
+exports.Parse = Parse;
+//# sourceMappingURL=tag.js.map
 
 /***/ }),
 
@@ -646,6 +1117,7 @@ exports.getInput = getInput;
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function setOutput(name, value) {
+    process.stdout.write(os.EOL);
     command_1.issueCommand('set-output', { name }, value);
 }
 exports.setOutput = setOutput;
@@ -5017,7 +5489,7 @@ class Parser extends Transform {
         ], this.options, this.__context(), {
           record: record,
         })
-      if(relax_column_count === true || 
+      if(relax_column_count === true ||
         (relax_column_count_less === true && recordLength < this.state.expectedRecordLength) ||
         (relax_column_count_more === true && recordLength > this.state.expectedRecordLength) ){
         this.info.invalid_field_length++
@@ -5047,7 +5519,7 @@ class Parser extends Transform {
         for(let i = 0, l = record.length; i < l; i++){
           if(columns[i] === undefined || columns[i].disabled) continue
           // Turn duplicate columns into an array
-          if (columns_duplicates_to_array === true && obj[columns[i].name]) {
+          if (columns_duplicates_to_array === true && obj[columns[i].name] !== undefined) {
             if (Array.isArray(obj[columns[i].name])) {
               obj[columns[i].name] = obj[columns[i].name].concat(record[i])
             } else {
@@ -20458,22 +20930,30 @@ module.exports = (versions, range, options) => {
 /***/ ((module, __unused_webpack_exports, __webpack_require__) => {
 
 const Range = __webpack_require__(9828)
-const { ANY } = __webpack_require__(1532)
+const Comparator = __webpack_require__(1532)
+const { ANY } = Comparator
 const satisfies = __webpack_require__(6055)
 const compare = __webpack_require__(4309)
 
 // Complex range `r1 || r2 || ...` is a subset of `R1 || R2 || ...` iff:
-// - Every simple range `r1, r2, ...` is a subset of some `R1, R2, ...`
+// - Every simple range `r1, r2, ...` is a null set, OR
+// - Every simple range `r1, r2, ...` which is not a null set is a subset of
+//   some `R1, R2, ...`
 //
 // Simple range `c1 c2 ...` is a subset of simple range `C1 C2 ...` iff:
 // - If c is only the ANY comparator
 //   - If C is only the ANY comparator, return true
-//   - Else return false
+//   - Else if in prerelease mode, return false
+//   - else replace c with `[>=0.0.0]`
+// - If C is only the ANY comparator
+//   - if in prerelease mode, return true
+//   - else replace C with `[>=0.0.0]`
 // - Let EQ be the set of = comparators in c
 // - If EQ is more than one, return true (null set)
 // - Let GT be the highest > or >= comparator in c
 // - Let LT be the lowest < or <= comparator in c
 // - If GT and LT, and GT.semver > LT.semver, return true (null set)
+// - If any C is a = range, and GT or LT are set, return false
 // - If EQ
 //   - If GT, and EQ does not satisfy GT, return true (null set)
 //   - If LT, and EQ does not satisfy LT, return true (null set)
@@ -20482,13 +20962,16 @@ const compare = __webpack_require__(4309)
 // - If GT
 //   - If GT.semver is lower than any > or >= comp in C, return false
 //   - If GT is >=, and GT.semver does not satisfy every C, return false
+//   - If GT.semver has a prerelease, and not in prerelease mode
+//     - If no C has a prerelease and the GT.semver tuple, return false
 // - If LT
 //   - If LT.semver is greater than any < or <= comp in C, return false
 //   - If LT is <=, and LT.semver does not satisfy every C, return false
-// - If any C is a = range, and GT or LT are set, return false
+//   - If GT.semver has a prerelease, and not in prerelease mode
+//     - If no C has a prerelease and the LT.semver tuple, return false
 // - Else return true
 
-const subset = (sub, dom, options) => {
+const subset = (sub, dom, options = {}) => {
   if (sub === dom)
     return true
 
@@ -20517,8 +21000,21 @@ const simpleSubset = (sub, dom, options) => {
   if (sub === dom)
     return true
 
-  if (sub.length === 1 && sub[0].semver === ANY)
-    return dom.length === 1 && dom[0].semver === ANY
+  if (sub.length === 1 && sub[0].semver === ANY) {
+    if (dom.length === 1 && dom[0].semver === ANY)
+      return true
+    else if (options.includePrerelease)
+      sub = [ new Comparator('>=0.0.0-0') ]
+    else
+      sub = [ new Comparator('>=0.0.0') ]
+  }
+
+  if (dom.length === 1 && dom[0].semver === ANY) {
+    if (options.includePrerelease)
+      return true
+    else
+      dom = [ new Comparator('>=0.0.0') ]
+  }
 
   const eqSet = new Set()
   let gt, lt
@@ -20561,10 +21057,32 @@ const simpleSubset = (sub, dom, options) => {
 
   let higher, lower
   let hasDomLT, hasDomGT
+  // if the subset has a prerelease, we need a comparator in the superset
+  // with the same tuple and a prerelease, or it's not a subset
+  let needDomLTPre = lt &&
+    !options.includePrerelease &&
+    lt.semver.prerelease.length ? lt.semver : false
+  let needDomGTPre = gt &&
+    !options.includePrerelease &&
+    gt.semver.prerelease.length ? gt.semver : false
+  // exception: <1.2.3-0 is the same as <1.2.3
+  if (needDomLTPre && needDomLTPre.prerelease.length === 1 &&
+      lt.operator === '<' && needDomLTPre.prerelease[0] === 0) {
+    needDomLTPre = false
+  }
+
   for (const c of dom) {
     hasDomGT = hasDomGT || c.operator === '>' || c.operator === '>='
     hasDomLT = hasDomLT || c.operator === '<' || c.operator === '<='
     if (gt) {
+      if (needDomGTPre) {
+        if (c.semver.prerelease && c.semver.prerelease.length &&
+            c.semver.major === needDomGTPre.major &&
+            c.semver.minor === needDomGTPre.minor &&
+            c.semver.patch === needDomGTPre.patch) {
+          needDomGTPre = false
+        }
+      }
       if (c.operator === '>' || c.operator === '>=') {
         higher = higherGT(gt, c, options)
         if (higher === c && higher !== gt)
@@ -20573,6 +21091,14 @@ const simpleSubset = (sub, dom, options) => {
         return false
     }
     if (lt) {
+      if (needDomLTPre) {
+        if (c.semver.prerelease && c.semver.prerelease.length &&
+            c.semver.major === needDomLTPre.major &&
+            c.semver.minor === needDomLTPre.minor &&
+            c.semver.patch === needDomLTPre.patch) {
+          needDomLTPre = false
+        }
+      }
       if (c.operator === '<' || c.operator === '<=') {
         lower = lowerLT(lt, c, options)
         if (lower === c && lower !== lt)
@@ -20591,6 +21117,12 @@ const simpleSubset = (sub, dom, options) => {
     return false
 
   if (lt && hasDomGT && !gt && gtltComp !== 0)
+    return false
+
+  // we needed a prerelease range in a specific tuple, but didn't get one
+  // then this isn't a subset.  eg >=1.2.3-pre is not a subset of >=1.0.0,
+  // because it includes prereleases in the 1.2.3 tuple
+  if (needDomGTPre || needDomLTPre)
     return false
 
   return true
