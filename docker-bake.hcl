@@ -1,54 +1,66 @@
+target "_common" {
+  args = {
+    BUILDKIT_CONTEXT_KEEP_GIT_DIR = 1
+  }
+}
+
 group "default" {
   targets = ["build"]
 }
 
 group "pre-checkin" {
-  targets = ["update-yarn", "format", "build"]
+  targets = ["vendor", "format", "build"]
 }
 
 group "validate" {
-  targets = ["validate-format", "validate-build", "validate-yarn"]
-}
-
-target "dockerfile" {
-  dockerfile = "dev.Dockerfile"
-}
-
-target "update-yarn" {
-  inherits = ["dockerfile"]
-  target = "update-yarn"
-  output = ["."]
+  targets = ["lint", "build-validate", "vendor-validate"]
 }
 
 target "build" {
-  inherits = ["dockerfile"]
-  target = "dist"
+  inherits = ["_common"]
+  dockerfile = "dev.Dockerfile"
+  target = "build-update"
   output = ["."]
 }
 
-target "test" {
-  inherits = ["dockerfile"]
-  target = "test-coverage"
-  output = ["."]
+target "build-validate" {
+  inherits = ["_common"]
+  dockerfile = "dev.Dockerfile"
+  target = "build-validate"
+  output = ["type=cacheonly"]
 }
 
 target "format" {
-  inherits = ["dockerfile"]
-  target = "format"
+  inherits = ["_common"]
+  dockerfile = "dev.Dockerfile"
+  target = "format-update"
   output = ["."]
 }
 
-target "validate-format" {
-  inherits = ["dockerfile"]
-  target = "validate-format"
+target "lint" {
+  inherits = ["_common"]
+  dockerfile = "dev.Dockerfile"
+  target = "lint"
+  output = ["type=cacheonly"]
 }
 
-target "validate-build" {
-  inherits = ["dockerfile"]
-  target = "validate-build"
+target "vendor" {
+  inherits = ["_common"]
+  dockerfile = "dev.Dockerfile"
+  target = "vendor-update"
+  output = ["."]
 }
 
-target "validate-yarn" {
-  inherits = ["dockerfile"]
-  target = "validate-yarn"
+target "vendor-validate" {
+  inherits = ["_common"]
+  dockerfile = "dev.Dockerfile"
+  target = "vendor-validate"
+  output = ["type=cacheonly"]
+}
+
+target "test" {
+  inherits = ["_common"]
+  dockerfile = "dev.Dockerfile"
+  target = "test-coverage"
+  output = ["./coverage"]
 }

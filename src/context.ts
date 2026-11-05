@@ -1,84 +1,141 @@
-import csvparse from 'csv-parse/lib/sync';
 import * as core from '@actions/core';
-import * as fs from 'fs';
-import * as os from 'os';
-import * as path from 'path';
 
-let _tmpDir: string;
+import {Util} from '@docker/actions-toolkit/lib/util.js';
+import {Git} from '@docker/actions-toolkit/lib/git.js';
+import {GitHub} from '@docker/actions-toolkit/lib/github/github.js';
+import {Toolkit} from '@docker/actions-toolkit/lib/toolkit.js';
 
-export interface Inputs {
-  images: string[];
-  tagSha: boolean;
-  tagEdge: boolean;
-  tagEdgeBranch: string;
-  tagSemver: string[];
-  tagMatch: string;
-  tagMatchGroup: number;
-  tagLatest: boolean;
-  tagSchedule: string;
-  tagCustom: string[];
-  tagCustomOnly: boolean;
-  labelCustom: string[];
-  sepTags: string;
-  sepLabels: string;
-  githubToken: string;
+type GithubContext = typeof GitHub.context;
+
+export interface Context extends GithubContext {
+  commitDate: Date;
 }
 
-export function tmpDir(): string {
-  if (!_tmpDir) {
-    _tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ghaction-docker-meta-')).split(path.sep).join(path.posix.sep);
-  }
-  return _tmpDir;
+export interface Inputs {
+  context: string;
+  images: string[];
+  tags: string[];
+  flavor: string[];
+  labels: string[];
+  annotations: string[];
+  sepTags: string;
+  sepLabels: string;
+  sepAnnotations: string;
+  bakeTarget: string;
+  githubToken: string;
 }
 
 export function getInputs(): Inputs {
   return {
-    images: getInputList('images'),
-    tagSha: /true/i.test(core.getInput('tag-sha') || 'false'),
-    tagEdge: /true/i.test(core.getInput('tag-edge') || 'false'),
-    tagEdgeBranch: core.getInput('tag-edge-branch'),
-    tagSemver: getInputList('tag-semver'),
-    tagMatch: core.getInput('tag-match'),
-    tagMatchGroup: Number(core.getInput('tag-match-group')) || 0,
-    tagLatest: /true/i.test(core.getInput('tag-latest') || core.getInput('tag-match-latest') || 'true'),
-    tagSchedule: core.getInput('tag-schedule') || 'nightly',
-    tagCustom: getInputList('tag-custom'),
-    tagCustomOnly: /true/i.test(core.getInput('tag-custom-only') || 'false'),
-    labelCustom: getInputList('label-custom', true),
-    sepTags: core.getInput('sep-tags') || `\n`,
-    sepLabels: core.getInput('sep-labels') || `\n`,
+    context: core.getInput('context') || ContextSource.workflow,
+    images: Util.getInputList('images', {ignoreComma: true, comment: '#', commentNoInfix: true}),
+    tags: Util.getInputList('tags', {ignoreComma: true, comment: '#', commentNoInfix: true}),
+    flavor: Util.getInputList('flavor', {ignoreComma: true, comment: '#', commentNoInfix: true}),
+    labels: Util.getInputList('labels', {ignoreComma: true, comment: '#', commentNoInfix: true}),
+    annotations: Util.getInputList('annotations', {ignoreComma: true, comment: '#', commentNoInfix: true}),
+    sepTags: core.getInput('sep-tags', {trimWhitespace: false}) || `\n`,
+    sepLabels: core.getInput('sep-labels', {trimWhitespace: false}) || `\n`,
+    sepAnnotations: core.getInput('sep-annotations', {trimWhitespace: false}) || `\n`,
+    bakeTarget: core.getInput('bake-target') || `docker-metadata-action`,
     githubToken: core.getInput('github-token')
   };
 }
 
-export function getInputList(name: string, ignoreComma?: boolean): string[] {
-  let res: Array<string> = [];
-
-  const items = core.getInput(name);
-  if (items == '') {
-    return res;
-  }
-
-  for (let output of csvparse(items, {
-    columns: false,
-    relaxColumnCount: true,
-    skipLinesWithEmptyValues: true
-  }) as Array<string[]>) {
-    if (output.length == 1) {
-      res.push(output[0]);
-      continue;
-    } else if (!ignoreComma) {
-      res.push(...output);
-      continue;
-    }
-    res.push(output.join(','));
-  }
-
-  return res.filter(item => item).map(pat => pat.trim());
+export enum ContextSource {
+  workflow = 'workflow',
+  git = 'git'
 }
 
-export const asyncForEach = async (array, callback) => {
-  for (let index = 0; index < array.length; index++) {
-    await callback(array[index], index, array);
+export async function getContext(source: string, toolkit: Toolkit): Promise<Context> {
+  if (source.startsWith(`${ContextSource.git}:`)) {
+    return await getContextFromGit(source.slice(ContextSource.git.length + 1));
   }
-};
+  switch (source) {
+    case ContextSource.workflow:
+      return await getContextFromWorkflow(toolkit);
+    case ContextSource.git:
+      return await getContextFromGit();
+    default:
+      throw new Error(`Invalid context source: ${source}`);
+  }
+}
+
+async function getContextFromWorkflow(toolkit: Toolkit): Promise<Context> {
+  const context = GitHub.context;
+
+  // Needs to override Git reference with pr ref instead of upstream branch ref
+  // for pull_request_target event
+  // https://docs.github.com/en/actions/using-workflows/events-that-trigger-workflows#pull_request_target
+  if (/pull_request_target/.test(context.eventName)) {
+    context.ref = `refs/pull/${context.payload.number}/merge`;
+  }
+
+  // DOCKER_METADATA_PR_HEAD_SHA env var can be used to set associated head
+  // SHA instead of commit SHA that triggered the workflow on pull request
+  // event.
+  if (/true/i.test(process.env.DOCKER_METADATA_PR_HEAD_SHA || '')) {
+    if ((/pull_request/.test(context.eventName) || /pull_request_target/.test(context.eventName)) && context.payload?.pull_request?.head?.sha != undefined) {
+      context.sha = context.payload.pull_request.head.sha;
+    }
+  }
+
+  return {
+    commitDate: await getCommitDateFromWorkflow(context.sha, toolkit),
+    ...context
+  } as Context;
+}
+
+async function getContextFromGit(workdir?: string): Promise<Context> {
+  const ctx = await Git.context(workdir);
+
+  return {
+    commitDate: await Git.commitDate(ctx.sha, workdir),
+    ...ctx
+  } as Context;
+}
+
+async function getCommitDateFromWorkflow(sha: string, toolkit: Toolkit): Promise<Date> {
+  const event = GitHub.context.payload as unknown as {
+    // branch push
+    commits?: Array<{
+      timestamp: string;
+      // commit sha
+      id: string;
+    }>;
+    // tags
+    head_commit?: {
+      timestamp: string;
+      // commit sha
+      id: string;
+    };
+  };
+
+  if (event.commits) {
+    const commitDate = event.commits.find(x => x.id === sha)?.timestamp;
+    if (commitDate) {
+      return new Date(commitDate);
+    }
+  }
+
+  if (event.head_commit) {
+    if (event.head_commit.id === sha) {
+      return new Date(event.head_commit.timestamp);
+    }
+  }
+
+  // fallback to github api for commit date
+  try {
+    const commit = await toolkit.github.octokit.rest.repos.getCommit({
+      owner: GitHub.context.repo.owner,
+      repo: GitHub.context.repo.repo,
+      ref: sha
+    });
+    if (commit.data.commit.committer?.date) {
+      return new Date(commit.data.commit.committer.date);
+    }
+    throw new Error('Committer date not found');
+  } catch (error) {
+    core.debug(`Failed to get commit date from GitHub API: ${error.message}`);
+    return new Date();
+  }
+}
